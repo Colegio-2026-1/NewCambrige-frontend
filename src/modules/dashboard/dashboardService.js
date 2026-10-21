@@ -1,73 +1,116 @@
 /**
- * Servicio exclusivo del módulo Dashboard.
- * Todos los endpoints apuntan al backend real (develop).
- * Usa dashboardClient — NO importa axiosClient de otros módulos.
+ * dashboardService.js
+ * Servicio del módulo Dashboard en New Cambridge School.
+ * Consume los endpoints correspondientes de cada módulo del backend:
+ * - Parametrización: /api/parametrizacion/anio-escolar (períodos académicos para todos los roles)
+ * - Paz y Salvo: /api/paz-salvo/estudiantes-rectoria y /api/paz-salvo/periodos
+ * - Estudiantes: /api/estudiantes/periodo/{id}
+ * - Tesorería: /api/tesoreria/pagos-pendientes
+ * - Secretaría: /api/secretaria/matriculas/pendientes y /api/secretaria/matriculas/periodo/{id}
+ * - Banda: /api/banda/prestamos/activos y /api/banda/estadisticas
+ * - Uniformes: /api/uniformes/prestamos/activos
+ * - Salones: /api/salones/periodo/{id} y /api/salones/
+ * - Usuarios: /api/usuarios/{id}/roles
  */
-import dashboardClient from "../../api/dashboardClient";
+import axiosClient from "../../api/axiosClient";
 
-// ─────────────────────────────────────────────
-// PERÍODOS ACADÉMICOS
-// GET /api/paz-salvo/periodos
-// Acceso: admin | secretaria | rectoria
-// ─────────────────────────────────────────────
-export const getPeriodos = () =>
-  dashboardClient.get("/api/paz-salvo/periodos");
+// ── ROLES DEL USUARIO ────────────────────────────────────────────────────────
+export const getRolesUsuario = (idUsuario) =>
+  axiosClient.get(`/api/usuarios/${idUsuario}/roles`);
 
-// ─────────────────────────────────────────────
-// ESTUDIANTES DEL PERÍODO
-// GET /api/estudiantes/periodo/{id}
-// Acceso: admin | titular | secretaria | banda | tesoreria | uniformes | rectoria
-// ─────────────────────────────────────────────
-export const getEstudiantesPorPeriodo = (periodoId) =>
-  dashboardClient.get(`/api/estudiantes/periodo/${periodoId}`);
+// ── PERÍODOS ACADÉMICOS ──────────────────────────────────────────────────────
+// Intenta primero /api/parametrizacion/anio-escolar (accesible para todos los roles),
+// y hace fallback a /api/paz-salvo/periodos (admin / rectoria).
+export const getPeriodos = async () => {
+  try {
+    const res = await axiosClient.get("/api/parametrizacion/anio-escolar");
+    return res;
+  } catch (err) {
+    // Fallback a paz-salvo si falla
+    return axiosClient.get("/api/paz-salvo/periodos");
+  }
+};
 
-// ─────────────────────────────────────────────
-// PENDIENTES DE PAZ Y SALVO
-// GET /api/paz-salvo/pendientes?periodo_id=X
-// Acceso: admin | secretaria | rectoria
-// ─────────────────────────────────────────────
-export const getPendientesPazSalvo = (periodoId) =>
-  dashboardClient.get("/api/paz-salvo/pendientes", {
-    params: periodoId ? { periodo_id: periodoId } : {},
+// ── ESTUDIANTES DEL PERÍODO ──────────────────────────────────────────────────
+// GET /api/estudiantes/periodo/{id_periodo}?limit=500
+export const getEstudiantesPorPeriodo = (idPeriodo, params = {}) =>
+  axiosClient.get(`/api/estudiantes/periodo/${idPeriodo}`, {
+    params: { limit: 500, ...params },
   });
 
-// ─────────────────────────────────────────────
-// PAGOS PENDIENTES
-// GET /api/tesoreria/pagos-pendientes?periodo_id=X
-// Acceso: admin | tesoreria | secretaria
-// ─────────────────────────────────────────────
-export const getPagosPendientes = (periodoId) =>
-  dashboardClient.get("/api/tesoreria/pagos-pendientes", {
-    params: periodoId ? { periodo_id: periodoId } : {},
+// ── ESTADO DE PAZ Y SALVO ────────────────────────────────────────────────────
+// Backend tiene GET /api/paz-salvo/estudiantes-rectoria?periodo_id={id}
+// Cada estudiante tiene { id_estudiante, nombre, semaforo, todas_firmadas, firmas_completadas, total_firmas }
+export const getPazSalvoEstado = (idPeriodo) =>
+  axiosClient.get("/api/paz-salvo/estudiantes-rectoria", {
+    params: idPeriodo ? { periodo_id: idPeriodo } : {},
   });
 
-// ─────────────────────────────────────────────
-// PRÉSTAMOS ACTIVOS — BANDA
-// GET /api/banda/prestamos/activos
-// Acceso: admin | banda | secretaria
-// ─────────────────────────────────────────────
-export const getPrestamosBandaActivos = () =>
-  dashboardClient.get("/api/banda/prestamos/activos");
+// Alias compatible para pendientes de paz y salvo
+export const getPendientesPazSalvo = async (idPeriodo) => {
+  try {
+    const res = await getPazSalvoEstado(idPeriodo);
+    // Filtrar los estudiantes con firmas pendientes
+    const list = res.data ?? [];
+    const pendientes = list.filter((e) => !e.todas_firmadas && e.semaforo !== "VERDE");
+    return { ...res, data: pendientes, total: list.length, alDia: list.length - pendientes.length };
+  } catch (err) {
+    // Si no tiene permiso de rectoría/admin, devolver array vacío
+    return { data: [], total: 0, alDia: 0 };
+  }
+};
 
-// ─────────────────────────────────────────────
-// PRÉSTAMOS ACTIVOS — UNIFORMES
-// GET /api/uniformes/prestamos/activos
-// Acceso: admin | uniformes
-// ─────────────────────────────────────────────
-export const getPrestamosUniformesActivos = () =>
-  dashboardClient.get("/api/uniformes/prestamos/activos");
+// ── PAGOS PENDIENTES / TESORERÍA ─────────────────────────────────────────────
+// GET /api/tesoreria/pagos-pendientes?periodo_id=X (roles: admin, tesoreria)
+// Fallback a /api/secretaria/matriculas/pendientes (roles: admin, secretaria)
+export const getPagosPendientes = async (idPeriodo) => {
+  try {
+    return await axiosClient.get("/api/tesoreria/pagos-pendientes", {
+      params: idPeriodo ? { periodo_id: idPeriodo } : {},
+    });
+  } catch (err) {
+    // Si falla por permisos u otro, intentar con secretaría
+    try {
+      return await axiosClient.get("/api/secretaria/matriculas/pendientes");
+    } catch {
+      return { data: [] };
+    }
+  }
+};
 
-// ─────────────────────────────────────────────
-// SALONES POR PERÍODO
-// GET /api/salones/periodo/{id}
-// Acceso: admin | secretaria | tesoreria
-// ─────────────────────────────────────────────
-export const getSalonesPorPeriodo = (periodoId) =>
-  dashboardClient.get(`/api/salones/periodo/${periodoId}`);
+// GET /api/secretaria/matriculas/periodo/{id_periodo}
+export const getMatriculasPorPeriodo = (idPeriodo) =>
+  axiosClient.get(`/api/secretaria/matriculas/periodo/${idPeriodo}`);
 
-// ─────────────────────────────────────────────
-// TODOS LOS SALONES (fallback sin filtro de período)
-// GET /api/salones/
-// ─────────────────────────────────────────────
+// ── BANDA — PRÉSTAMOS ACTIVOS Y ESTADÍSTICAS ────────────────────────────────
+export const getPrestamosActivosBanda = () =>
+  axiosClient.get("/api/banda/prestamos/activos");
+
+export const getPrestamosBandaActivos = getPrestamosActivosBanda;
+
+export const getEstadisticasBanda = () =>
+  axiosClient.get("/api/banda/estadisticas");
+
+// ── UNIFORMES — PRÉSTAMOS ACTIVOS ───────────────────────────────────────────
+export const getPrestamosActivosUniformes = () =>
+  axiosClient.get("/api/uniformes/prestamos/activos");
+
+export const getPrestamosUniformesActivos = getPrestamosActivosUniformes;
+
+// ── SALONES POR PERÍODO ──────────────────────────────────────────────────────
+// GET /api/salones/periodo/{id_periodo} (roles: admin, titular)
+// Fallback a /api/parametrizacion/salones/periodo/{id_periodo} o /api/salones/
+export const getSalonesPorPeriodo = async (idPeriodo) => {
+  try {
+    return await axiosClient.get(`/api/salones/periodo/${idPeriodo}`);
+  } catch (err) {
+    try {
+      return await axiosClient.get(`/api/parametrizacion/salones/periodo/${idPeriodo}`);
+    } catch {
+      return axiosClient.get("/api/salones/");
+    }
+  }
+};
+
 export const getSalones = () =>
-  dashboardClient.get("/api/salones/");
+  axiosClient.get("/api/salones/");
