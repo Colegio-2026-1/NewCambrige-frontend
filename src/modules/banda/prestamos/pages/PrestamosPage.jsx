@@ -1,6 +1,6 @@
 import React from 'react';
 import usePrestamos from "../hooks/usePrestamos";
-import { useAuth } from "../../../../api/useAuth";
+import { useAuth } from "../../../../api/AuthContext";
 
 import Icon from '../../../../components/common/Icon';
 import { mdiHome, mdiAccountMusic, mdiPiano } from '@mdi/js';

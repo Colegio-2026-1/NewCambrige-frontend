@@ -1,7 +1,7 @@
 /**
  * DashboardPage — New Cambridge School.
  * Layout responsivo profesional: auto-fit grid por rol.
- * Los roles se obtienen desde el backend con getRolesUsuario(id_usuario).
+ * Los roles se obtienen desde el backend con getRolesUsuario(id_usuario) o desde AuthContext.
  */
 import { useEffect, useState } from "react";
 import { Home, LayoutDashboard } from "lucide-react";
@@ -20,11 +20,11 @@ import {
   getPeriodos,
   getEstudiantesPorPeriodo,
   getPendientesPazSalvo,
-  getMatriculasPorPeriodo,
+  getPagosPendientes,
   getPrestamosActivosBanda,
   getPrestamosActivosUniformes,
   getSalonesPorPeriodo,
-} from "../../api/dashboard/dashboardService";
+} from "./dashboardService";
 
 import "./DashboardPage.css";
 
@@ -122,7 +122,7 @@ const ChartSwitch = ({ options, value, onChange }) => (
 
 // ── Componente principal ─────────────────────────────────────────
 export default function DashboardPage() {
-  const { user } = useAuth();
+  const { user, roles: authRoles, loadingRoles, logout } = useAuth();
 
   const menuItems = [
     { label: "Inicio",    path: "/home",      icon: <Home size={18} /> },
@@ -130,8 +130,8 @@ export default function DashboardPage() {
   ];
 
   // ── Estado ─────────────────────────────────────────────────────
-  const [roles,            setRoles]            = useState([]);
-  const [rolesLoaded,      setRolesLoaded]      = useState(false);
+  const [roles,            setRoles]            = useState(authRoles || []);
+  const [rolesLoaded,      setRolesLoaded]      = useState(!loadingRoles && (authRoles?.length > 0));
   const [selectedMenu,     setSelectedMenu]     = useState("Dashboard");
   const [periodos,         setPeriodos]         = useState([]);
   const [periodoId,        setPeriodoId]        = useState("");
@@ -154,12 +154,27 @@ export default function DashboardPage() {
 
   // ── PASO 1: Obtener roles reales del backend al montar ──────────────
   useEffect(() => {
-    if (!user?.id_usuario) return;
+    if (authRoles && authRoles.length > 0) {
+      setRoles(authRoles);
+      setRolesLoaded(true);
+      return;
+    }
+
+    if (!user?.id_usuario) {
+      if (!loadingRoles) setRolesLoaded(true);
+      return;
+    }
+
     getRolesUsuario(user.id_usuario)
-      .then((res) => setRoles(res.data ?? []))
-      .catch(() => setRoles([]))
+      .then((res) => {
+        setRoles(res.data ?? []);
+      })
+      .catch(() => {
+        // En caso de restricción en endpoint de roles, usar los de auth si existen
+        setRoles(authRoles ?? []);
+      })
       .finally(() => setRolesLoaded(true));
-  }, [user?.id_usuario]);
+  }, [user?.id_usuario, authRoles, loadingRoles]);
 
   const can     = getPermisos(roles);
   const density = getDensity(can);
@@ -174,7 +189,10 @@ export default function DashboardPage() {
         // DSH-11: no preseleccionar ningún período, mostrar "Seleccionar" por defecto
         setPeriodoId("");
       })
-      .catch(() => setError("No se pudieron cargar los períodos."))
+      .catch((err) => {
+        console.error("Error al cargar períodos:", err);
+        setError("No se pudieron cargar los períodos.");
+      })
       .finally(() => setPeriodosLoaded(true));
   }, [rolesLoaded]);
 
@@ -185,85 +203,118 @@ export default function DashboardPage() {
     setLoading(true);
     setError(null);
 
-    const tareas = [];
+    const loadDashboardData = async () => {
+      let estudiantesList = [];
 
-    if (can.kpiEstudiantes || can.grafSalones) {
-      tareas.push(
-        getEstudiantesPorPeriodo(id)
-          .then((r) => setTotalEstudiantes(r.data?.length ?? 0))
-          .catch(() => {})
-      );
-    }
+      try {
+        // 1. Estudiantes del período
+        if (can.kpiEstudiantes || can.grafSalones || can.kpiPaz || can.kpiPendientes || can.grafPaz) {
+          try {
+            const rEst = await getEstudiantesPorPeriodo(id);
+            estudiantesList = rEst.data ?? [];
+            setTotalEstudiantes(estudiantesList.length);
+          } catch (err) {
+            console.error("Error al cargar estudiantes del período:", err);
+          }
+        }
 
-    if (can.kpiPendientes || can.kpiPaz || can.grafPaz) {
-      tareas.push(
-        getPendientesPazSalvo(id)
-          .then((r) => {
-            const pendientes = r.data ?? [];
-            setTotalPendientes(pendientes.length);
-            setTotalPazOk(
-              totalEstudiantes !== null
-                ? totalEstudiantes - pendientes.length
-                : null
-            );
+        // 2. Estado de Paz y Salvo
+        if (can.kpiPendientes || can.kpiPaz || can.grafPaz) {
+          try {
+            const pzRes = await getPendientesPazSalvo(id);
+            const pendientesList = pzRes.data ?? [];
+            const totalPendientesCount = pendientesList.length;
+
+            let alDiaCount = 0;
+            let pendCount = totalPendientesCount;
+
+            if (pzRes.total && pzRes.total > 0) {
+              alDiaCount = pzRes.alDia ?? 0;
+              pendCount = pzRes.total - alDiaCount;
+            } else if (estudiantesList.length > 0) {
+              alDiaCount = Math.max(0, estudiantesList.length - totalPendientesCount);
+              pendCount = totalPendientesCount;
+            }
+
+            setTotalPendientes(pendCount);
+            setTotalPazOk(alDiaCount);
             setPazData([
-              { name: "Al día",    value: totalEstudiantes ? totalEstudiantes - pendientes.length : 0 },
-              { name: "Pendiente", value: pendientes.length },
+              { name: "Al día",    value: alDiaCount },
+              { name: "Pendiente", value: pendCount },
             ]);
-          })
-          .catch(() => {})
-      );
-    }
+          } catch (err) {
+            console.error("Error al cargar paz y salvo:", err);
+          }
+        }
 
-    if (can.kpiPagos || can.grafPagos) {
-      tareas.push(
-        getMatriculasPorPeriodo(id)
-          .then((r) => {
-            const todas = r.data ?? [];
-            const pagos = todas.filter(
-              (m) => (m.estado ?? "").toLowerCase() === "pendiente"
-            );
+        // 3. Matrículas / Pagos Pendientes (Tesorería)
+        if (can.kpiPagos || can.grafPagos) {
+          try {
+            const pRes = await getPagosPendientes(id);
+            const pagos = pRes.data ?? [];
             setTotalPagos(pagos.length);
             setPagosData(pagos.slice(0, 5));
-          })
-          .catch(() => {})
-      );
-    }
+          } catch (err) {
+            console.error("Error al cargar pagos pendientes:", err);
+          }
+        }
 
-    if (can.grafPrestamos) {
-      tareas.push(
-        Promise.allSettled([
-          getPrestamosActivosBanda(),
-          getPrestamosActivosUniformes(),
-        ]).then(([banda, uniformes]) => {
-          setPrestData([
-            { modulo: "Banda",     activos: banda.status     === "fulfilled" ? (banda.value.data?.length     ?? 0) : 0 },
-            { modulo: "Uniformes", activos: uniformes.status === "fulfilled" ? (uniformes.value.data?.length ?? 0) : 0 },
-          ]);
-        })
-      );
-    }
+        // 4. Préstamos Activos (Banda y Uniformes)
+        if (can.grafPrestamos) {
+          try {
+            const [bandaRes, uniformesRes] = await Promise.allSettled([
+              getPrestamosActivosBanda(),
+              getPrestamosActivosUniformes(),
+            ]);
 
-    if (can.grafSalones) {
-      tareas.push(
-        getSalonesPorPeriodo(id)
-          .then((r) => {
-            const salones = r.data ?? [];
+            setPrestData([
+              {
+                modulo: "Banda",
+                activos: bandaRes.status === "fulfilled" ? (bandaRes.value.data?.length ?? 0) : 0,
+              },
+              {
+                modulo: "Uniformes",
+                activos: uniformesRes.status === "fulfilled" ? (uniformesRes.value.data?.length ?? 0) : 0,
+              },
+            ]);
+          } catch (err) {
+            console.error("Error al cargar préstamos activos:", err);
+          }
+        }
+
+        // 5. Salones por período con conteo real de estudiantes
+        if (can.grafSalones) {
+          try {
+            const sRes = await getSalonesPorPeriodo(id);
+            const salones = sRes.data ?? [];
+
+            // Mapear estudiantes por id_salon
+            const countBySalon = {};
+            estudiantesList.forEach((e) => {
+              if (e.id_salon) {
+                countBySalon[e.id_salon] = (countBySalon[e.id_salon] || 0) + 1;
+              }
+            });
+
             setSalonesData(
               salones
                 .map((s) => ({
                   nombre:      s.nombre ?? `${s.grado}°${s.grupo}`,
-                  estudiantes: s.num_estudiantes ?? 0,
+                  estudiantes: countBySalon[s.id_salon] ?? s.num_estudiantes ?? 0,
                 }))
                 .sort((a, b) => b.estudiantes - a.estudiantes)
                 .slice(0, 10)
             );
-          })
-          .catch(() => {})
-      );
-    }
+          } catch (err) {
+            console.error("Error al cargar salones:", err);
+          }
+        }
+      } finally {
+        setLoading(false);
+      }
+    };
 
-    Promise.allSettled(tareas).finally(() => setLoading(false));
+    loadDashboardData();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [periodoId, rolesLoaded]);
 
@@ -302,7 +353,12 @@ export default function DashboardPage() {
             menuItems={menuItems}
             selectedMenu={selectedMenu}
             setSelectedMenu={setSelectedMenu}
-            user={user}
+            user={{
+              ...user,
+              nombre: user?.nombre || "Usuario",
+              rol: roles[0] || user?.rol || "Rol Desconocido",
+            }}
+            logout={logout}
           />
         }
       >
@@ -312,15 +368,11 @@ export default function DashboardPage() {
           {/* ERROR GLOBAL */}
           {error && <p className="dash-error">{error}</p>}
 
-          {/* DSH-01: Se eliminó el badge "Acceso como:" que mostraba el rol al usuario final */}
-
           {/* FILTRO PERÍODO */}
           <div className="dash-filter-bar">
             <label className="dash-filter-label" htmlFor="periodo-select">
               Período académico
             </label>
-            {/* DSH-03 / DSH-11: selector con estado "Seleccionar" por defecto,
-                manejo correcto del estado de carga y sin datos */}
             <select
               id="periodo-select"
               className="dash-filter-select"
@@ -333,7 +385,6 @@ export default function DashboardPage() {
                 <option value="" disabled>No hay períodos académicos registrados</option>
               ) : (
                 <>
-                  {/* DSH-11: opción por defecto "Seleccionar" */}
                   <option value="">Seleccione un período académico</option>
                   {periodos.map((p) => (
                     <option key={p.id_periodo} value={String(p.id_periodo)}>
@@ -343,26 +394,20 @@ export default function DashboardPage() {
                 </>
               )}
             </select>
-            {/* DSH-04 / DSH-11: Se eliminó el badge que repetía el período seleccionado */}
           </div>
 
           {/* KPI CARDS — auto-fit, no colapsan en pantallas pequeñas */}
           <div className="dash-kpi-grid">
             {can.kpiEstudiantes && (
-              // DSH-07: primera letra en mayúscula en el sub
               <KpiCard title="Estudiantes"           value={totalEstudiantes} sub="En el período"          color={C_BLUE}  loading={loading} />
             )}
             {can.kpiPaz && (
-              // DSH-05: título corregido a "PAZ Y SALVO" (sin "OK")
-              // DSH-07: primera letra en mayúscula en el sub
               <KpiCard title="PAZ Y SALVO"           value={totalPazOk}       sub="Sin pendientes"          color={C_GREEN} loading={loading} />
             )}
             {can.kpiPendientes && (
-              // DSH-06: título "PAZ Y SALVO INCOMPLETO" y sub "Con pendientes"
               <KpiCard title="PAZ Y SALVO INCOMPLETO" value={totalPendientes}  sub="Con pendientes"         color={C_RED}   loading={loading} />
             )}
             {can.kpiPagos && (
-              // DSH-07: primera letra en mayúscula en el sub
               <KpiCard title="Matrículas Pendientes" value={totalPagos}       sub="Por período"             color={C_WARN}  loading={loading} />
             )}
           </div>
@@ -386,7 +431,7 @@ export default function DashboardPage() {
                   </div>
                   <div className="dash-card-inner">
                     {pazData.length === 0 && !loading
-                      ? <p className="dash-empty">Sin datos para este período</p>
+                      ? <p className="dash-empty">{periodoId ? "Sin datos para este período" : "Seleccione un período para ver las estadísticas"}</p>
                       : pazChart === "donut" ? (
                           <ResponsiveContainer width="100%" height={240}>
                             <PieChart>
@@ -420,7 +465,6 @@ export default function DashboardPage() {
                 <div className="dash-card">
                   <div className="dash-card-header">
                     <h3 className="dash-card-title">Préstamos Activos</h3>
-                    {/* DSH-08: "VS" en negrilla */}
                     <span className="dash-card-sub">Banda <strong>VS</strong> Uniformes</span>
                   </div>
                   <div className="dash-card-inner">
@@ -448,12 +492,11 @@ export default function DashboardPage() {
                 <div className="dash-card">
                   <div className="dash-card-header">
                     <h3 className="dash-card-title">Estudiantes por Salón</h3>
-                    {/* DSH-10: formato unificado "Período actual · Top 10" */}
                     <span className="dash-card-sub">Período actual · Top 10</span>
                   </div>
                   <div className="dash-card-inner">
                     {salonesData.length === 0 && !loading
-                      ? <p className="dash-empty">Sin datos para este período</p>
+                      ? <p className="dash-empty">{periodoId ? "Sin datos para este período" : "Seleccione un período para ver las estadísticas"}</p>
                       : (
                         <ResponsiveContainer width="100%" height={280}>
                           <BarChart data={salonesData} layout="vertical" margin={{ top: 0, right: 20, left: 30, bottom: 0 }}>
@@ -474,12 +517,11 @@ export default function DashboardPage() {
                 <div className="dash-card">
                   <div className="dash-card-header">
                     <h3 className="dash-card-title">Matrículas Pendientes</h3>
-                    {/* DSH-10: formato unificado "Período actual · Top 5" */}
                     <span className="dash-card-sub">Período actual · Top 5</span>
                   </div>
                   <div className="dash-card-inner">
                     {pagosData.length === 0 && !loading
-                      ? <p className="dash-empty">Sin matrículas pendientes</p>
+                      ? <p className="dash-empty">{periodoId ? "Sin matrículas pendientes" : "Seleccione un período para ver las matrículas pendientes"}</p>
                       : (
                         <ul className="dash-pagos-list">
                           {pagosData.map((m, i) => (
@@ -487,10 +529,12 @@ export default function DashboardPage() {
                               <span className="dash-pagos-num">{i + 1}</span>
                               <div className="dash-pagos-info">
                                 <span className="dash-pagos-nombre">
-                                  {m.nombre_estudiante ?? m.estudiante ?? "Estudiante"}
+                                  {m.nombre ?? m.nombre_estudiante ?? m.estudiante ?? "Estudiante"}
                                 </span>
                                 <span className="dash-pagos-concepto">
-                                  {m.concepto ?? m.tipo ?? "Matrícula"}
+                                  {m.telefono_acudiente
+                                    ? `Tel: ${m.telefono_acudiente}`
+                                    : (m.concepto ?? m.tipo ?? "Pago de Tesorería")}
                                 </span>
                               </div>
                               <span className="dash-pagos-badge">Pendiente</span>
