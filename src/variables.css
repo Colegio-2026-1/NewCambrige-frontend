@@ -6,21 +6,21 @@ Importar en main.jsx o index.css:
 @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap');
 @font-face {
   font-family: 'Bentham';
-  src: url('../../assets/fonts/Bentham-Regular.ttf') format('truetype');
+  src: url('./assets/fonts/Bentham-Regular.ttf') format('truetype');
   font-weight: normal;
   font-style: normal;
 }
 
 @font-face {
   font-family: 'Staatliches';
-  src: url('../../assets/fonts/Staatliches-Regular.ttf') format('truetype');
+  src: url('./assets/fonts/Staatliches-Regular.ttf') format('truetype');
   font-weight: normal;
   font-style: normal;
 }
 
 @font-face {
   font-family: 'HeyGotcha';
-  src: url('../../assets/fonts/HeyGotchaRegular.ttf') format('truetype');
+  src: url('./assets/fonts/HeyGotchaRegular.ttf') format('truetype');
   font-weight: normal;
   font-style: normal;
 }

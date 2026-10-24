@@ -76,11 +76,13 @@ export function AuthProvider({ children }) {
     [navigate, fetchRoles]
   );
 const logout = useCallback(
-  async (message = "") => {
-    try {
-      await logoutRequest();
-    } catch {
-      // Silencioso: puede fallar si el token ya expiró (401) o si no hay red.
+  async (message = "", options = {notifyBackend: true}) => {
+    if (options?.notifyBackend) {
+      try {
+        await logoutRequest();
+      } catch {
+        // Silencioso: puede fallar si el token ya expiró (401) o si no hay red.
+      }
     }
     clearSession();
     setLoadingRoles(true);

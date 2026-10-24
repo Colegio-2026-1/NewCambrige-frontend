@@ -35,12 +35,7 @@ axiosClient.interceptors.response.use(
     const url = error.config?.url || "";
 
     // -------- LOGIN --------
-    if (url.includes("/api/auth/token")) {
-      if (status === 429) {
-        emitLoginBlocked(
-          "Hiciste demasiados intentos de sesión. Intenta nuevamente en 1 minuto."
-        );
-      }
+    if (url.includes("/api/auth/token") || url.includes("/api/auth/logout")) {
       return Promise.reject(error);
     }
 
